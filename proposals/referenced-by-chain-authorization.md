@@ -19,17 +19,25 @@
 
 # Proposal: Chain-Aware Authorization for Views (`referenced-by`)
 
-Author: Laurent Goujon. Status: **early draft for informal review, not yet submitted to dev@ or opened as a proposal issue.** This file lives in a personal fork only to gather feedback from a few people first; it is not intended to be merged.
+Author: Laurent Goujon. Status: **draft proposal for discussion.** Feedback from anyone in the community is welcome.
 
 AI assistance disclosure: the research and first draft were prepared with an AI assistant and are being reviewed by the author.
 
-Every statement about current Polaris behavior was checked in the source of Polaris `main` at commit `9149181` (2026-10-28). What could not be established is listed as an open question.
+Every statement about current Polaris behavior was checked in the source of Polaris `main` at commit `9149181` (2026-10-28); the state of the Iceberg and Trino pull requests mentioned is as of the same date. What could not be established is listed as an open question.
 
 ## 1. Summary
 
 Polaris accepts the Iceberg REST `referenced-by` parameter on `loadTable`, `loadCredentials` and `loadView` (from the Iceberg 1.11 spec update) but never uses it. `IcebergCatalogAdapter` receives the value and drops it, and the handlers have no argument for it. As a result Polaris authorizes a table reached through a view exactly like a direct load. It cannot make chain-aware decisions or audit the chain, and it has no way to host definer-style views other than leaving the semantics entirely to engines.
 
 This proposal brings the chain into the authorizer SPI in a **no-behavior-change first phase**, then discusses optional catalog-managed view security attributes in a separate second phase. The authorization and trust model stay with the authorizer (built-in RBAC, OPA, Ranger, or a custom implementation), consistent with the Iceberg spec leaving them to catalogs.
+
+### Background
+
+`referenced-by` is an optional query parameter of the Iceberg REST catalog spec on `loadTable`, `loadView` and `loadCredentials`. When an engine loads a table or view while evaluating a view, it can pass the chain of views it went through, outermost first, as a comma-separated list of fully qualified view names. It was proposed to support definer views, where what a catalog should grant on a table can depend on the view through which the table is reached.
+
+- The spec change landed in Iceberg 1.11.0 (apache/iceberg#13810), and the Iceberg Java client sends the chain since 1.12.0 (#18015). A Spark change (#13979) and a Trino change (trinodb/trino#31542) were still open at the time of writing.
+- The spec describes the parameter only. It says nothing about what a catalog does with it, so authorization semantics (definer views, auditing, credential scoping) are left to each catalog.
+- Lakekeeper is a catalog that acts on the parameter today (see section 7).
 
 ## 2. Non-goals
 
@@ -49,7 +57,7 @@ This proposal brings the chain into the authorizer SPI in a **no-behavior-change
 | Authorization of views | `REPLACE_VIEW` requires `VIEW_WRITE_PROPERTIES`; `LOAD_VIEW` requires `VIEW_READ_PROPERTIES`. |
 | Credentials | `loadTable` with delegation and `loadCredentials` both call `authorizeLoadTable`. `loadView` returns the view metadata only. |
 | ETag | On `loadTable`, `authorizeLoadTable` runs before the `If-None-Match` comparison. The tag is generated from the metadata location alone (`IcebergHttpUtil.generateETagForMetadataFileLocation`), so it does not vary by principal, delegation mode or `referencedBy`. `loadView` takes no `If-None-Match` and sets no ETag. No `Cache-Control` or `Vary` occurs in `runtime` or `polaris-core` main sources, properties or YAML files. |
-| Prior discussion | Searches of apache/polaris issues and pull requests found nothing on `referenced-by`, definer or invoker views, or view owner. A May 2025 dev@ thread, "Context-Aware Functions for Apache Polaris" (Prashant Singh), proposed catalog-side functions for views to resolve the security context; the replies have not been read yet. |
+| Prior discussion | Searches of apache/polaris issues and pull requests found nothing on `referenced-by`, definer or invoker views, or view owner. A May 2025 dev@ thread, "Context-Aware Functions for Apache Polaris", may overlap with this proposal; its participants are invited to say how it relates. |
 
 ## 4. Proposal
 
@@ -100,13 +108,6 @@ Only if the community wants a built-in implementation rather than leaving it to 
 6. Should `loadView` get ETag support, and should `Cache-Control` and `Vary` be added for credential-bearing responses?
 7. What did the 2025 context-aware-functions thread conclude, and does it overlap?
 
-## 7. Process and next steps
-
-1. Read the dev@ replies of the 2025 thread, the SPI RFC linked from #3779, and the recent SPI pull requests, to align naming.
-2. Reach out informally to the SPI authors, the `referenced-by` authors and the Lakekeeper maintainers before posting.
-3. Open a `proposal` issue and design doc and start the dev@ discussion; propose Phase 1 as the first PR, Phase 2 only after agreement.
-4. Keep the SPI shape aligned so downstream forks that need Phase 1 earlier can converge on upstream later.
-
-## 8. Prior art
+## 7. Prior art
 
 Lakekeeper documents a trusted-engine model: the owner stored in an engine-specific property, only trusted engines may set it, the chain honored only for trusted callers, evaluation switching at definer boundaries, a depth limit (default 10), and audit with the full chain. It is the reference for Phase 2 semantics, not a mandate.
